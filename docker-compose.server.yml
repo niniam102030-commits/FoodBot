@@ -1,0 +1,29 @@
+services:
+  foodbot:
+    # بسته اجرایی آماده — کد سورس در این بسته وجود ندارد
+    image: ghcr.io/niniam102030-commits/foodbot:latest
+    container_name: foodbot
+    restart: unless-stopped
+    labels:
+      - autoheal=true
+    env_file: .env
+    environment:
+      TZ: Asia/Tehran
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+    stop_grace_period: 30s
+    depends_on:
+      - autoheal
+
+  # نگهبان: کانتینر ناسالم را خودکار ری‌استارت می‌کند
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      TZ: Asia/Tehran
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

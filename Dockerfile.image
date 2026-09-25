@@ -1,0 +1,31 @@
+# ایمیج اجرایی «بدون سورس» برای تحویل بیرونی:
+# کد به بایت‌کد کامپایل و فایل‌های .py از ایمیج حذف می‌شوند تا
+# سورس اصلی همراه بسته توزیع نشود.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Tehran
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# آزمون build: اگر کد با نسخه کتابخانه‌ها ناسازگار باشد، ایمیج ساخته نمی‌شود
+COPY *.py ./
+RUN BOT_TOKEN=test:dummy DATABASE_URL=sqlite:///./data/foodbot.db python -c "import main" \
+    && echo 'Self-test passed: all imports OK'
+
+# کامپایل کل کد به بایت‌کد (-b = کنار خود فایل، بدون پوشه __pycache__)
+# و سپس حذف کامل سورس‌ها از ایمیج نهایی
+RUN python -m compileall -b /app/*.py \
+    && rm /app/*.py \
+    && ls /app
+
+RUN mkdir -p data logs backups
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD pgrep -f "python main" > /dev/null || exit 1
+
+CMD ["python", "main.pyc"]

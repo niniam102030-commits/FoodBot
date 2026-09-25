@@ -1,0 +1,5 @@
+BOT_TOKEN=1234567890:AAtoken-khod-ra-inja-bigozarid
+API_URL=https://tapi.bale.ai
+ADMIN_IDS=123456789
+DATABASE_URL=sqlite:///./data/foodbot.db
+LOG_LEVEL=INFO

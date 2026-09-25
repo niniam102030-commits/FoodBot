@@ -1,0 +1,32 @@
+services:
+  foodbot:
+    build: .
+    container_name: foodbot
+    # اجرای خودکار بعد از ریست سرور یا کرش — کلید ۲۴ ساعته بودن
+    restart: unless-stopped
+    # اگر healthcheck سه بار پشت سر هم شکست بخورد، یعنی ربات هنگ کرده؛
+    # سرویس autoheal پایین، کانتینر را خودکار ری‌استارت می‌کند
+    labels:
+      - autoheal=true
+    env_file: .env
+    environment:
+      TZ: Asia/Tehran
+    volumes:
+      # دیتابیس، لاگ‌ها و بکاپ‌ها باید بیرون از کانتینر ماندگار شوند
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+    stop_grace_period: 30s
+    depends_on:
+      - autoheal
+
+  # نگهبان: کانتینرهایی که healthcheckشان fail شود را خودکار ری‌استارت می‌کند
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      TZ: Asia/Tehran
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
