@@ -22,6 +22,7 @@ from keyboards import (
     get_food_list_keyboard, get_day_edit_keyboard, get_archive_month_keyboard,
     get_confirmation_keyboard, get_delete_account_keyboard, get_zero_next_keyboard,
     get_meal_choice_keyboard, get_admin_user_days_keyboard, get_restart_keyboard,
+    get_user_scope_keyboard,
     get_admin_management_keyboard, get_extra_admins_keyboard,
     get_user_list_keyboard, get_user_card_keyboard, get_blocked_days_keyboard,
     get_back_to_menu_keyboard, get_cancel_keyboard,
@@ -178,7 +179,11 @@ def _audit(actor_id: str, action: str, target_id: str | None = None, details: st
 
 
 def _meal_label(meal_type: str) -> str:
-    return "ناهار" if meal_type == "lunch" else "شام"
+    if meal_type == "lunch":
+        return "ناهار"
+    if meal_type == "dinner":
+        return "شام"
+    return "کل کاربران"
 
 
 def _window_label(start_day: int, start_offset: int, end_day: int, end_offset: int) -> str:
@@ -884,7 +889,7 @@ async def cb_delete_archive(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.callback_query(F.data.in_({"admin_users_lunch", "admin_users_dinner"}))
+@router.callback_query(F.data.in_({"admin_users_lunch", "admin_users_dinner", "admin_users_all"}))
 async def cb_admin_users_meal(callback: CallbackQuery, state: FSMContext):
     if not is_admin(str(callback.from_user.id)):
         await callback.answer()
@@ -900,13 +905,17 @@ async def cb_user_list(callback: CallbackQuery, state: FSMContext):
         return
     meal_type = callback.data.removeprefix("user_list_")
     if meal_type == "back":
+        with get_db() as db:
+            lunch_count = db.query(User).filter(User.lunch_status == "completed").count()
+            dinner_count = db.query(User).filter(User.dinner_status == "completed").count()
+            total_count = db.query(User).count()
         await callback.message.edit_text(
-            "کاربران کدام وعده نمایش داده شوند؟",
-            reply_markup=get_meal_choice_keyboard("admin_users"),
+            "کاربران کدام بخش نمایش داده شوند؟",
+            reply_markup=_users_scope_kb(lunch_count, dinner_count, total_count),
         )
         await callback.answer()
         return
-    if meal_type not in {"lunch", "dinner"}:
+    if meal_type not in {"lunch", "dinner", "all"}:
         await callback.answer()
         return
     await _show_user_list(callback, state, meal_type)
@@ -935,10 +944,11 @@ async def _show_user_list(callback: CallbackQuery, state: FSMContext, meal_type:
             "🔍 جست‌وجو با «us [نام]» و فیلتر ناتمام‌ها با «us ناتمام» انجام می‌شود."
         )
         return
+    scope_label = "کل کاربران" if meal_type == "all" else f"کاربران {_meal_label(meal_type)}"
     title = (
-        f"⏳ کاربران {_meal_label(meal_type)} با ثبت ناتمام ({to_persian_digits(len(user_list))} نفر):"
+        f"⏳ {scope_label} با ثبت ناتمام ({to_persian_digits(len(user_list))} نفر):"
         if pending_only
-        else f"👥 کاربران {_meal_label(meal_type)} ({to_persian_digits(len(user_list))} نفر):"
+        else f"👥 {scope_label} ({to_persian_digits(len(user_list))} نفر):"
     )
     await callback.message.edit_text(
         f"{title}\nروی نام کاربر مورد نظر بزنید:",
@@ -962,6 +972,24 @@ async def cb_user_card(callback: CallbackQuery):
         status = getattr(user, _status_field(meal_type), None) if user else None
     if not user:
         await callback.message.edit_text("❌ کاربری با این مشخصات پیدا نشد.")
+        await callback.answer()
+        return
+    if meal_type == "all":
+        # کارت ترکیبی: وضعیت و هزینه هر دو وعده
+        lunch_total = calculate_user_total(uid, "lunch")
+        dinner_total = calculate_user_total(uid, "dinner")
+        with get_db() as db:
+            u = db.query(User).filter(User.user_id == uid).first()
+            lunch_status = u.lunch_status if u else None
+            dinner_status = u.dinner_status if u else None
+        await callback.message.edit_text(
+            f"👤 نام: {full_name}\n"
+            f"🆔 شناسه: {uid}\n\n"
+            f"🍽️ ناهار — وضعیت: {lunch_status} | هزینه: {format_price(lunch_total)} تومان\n"
+            f"🌙 شام — وضعیت: {dinner_status} | هزینه: {format_price(dinner_total)} تومان\n\n"
+            "یکی از گزینه‌ها را انتخاب کنید:",
+            reply_markup=get_user_card_keyboard(uid, "all"),
+        )
         await callback.answer()
         return
     total = calculate_user_total(uid, meal_type)
@@ -1027,6 +1055,10 @@ async def cb_admin_edit_user_meal(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     _, _, _, target_uid, meal_type = callback.data.split("_")
+    if meal_type == "all":
+        # ویرایش ترکیبی معنا ندارد؛ ادمین باید وعده مشخص انتخاب کند
+        await callback.answer("برای ویرایش، ابتدا وعده (ناهار یا شام) را از منوی کاربر انتخاب کنید.", show_alert=True)
+        return
     await state.set_state(UserReservationState.waiting_for_days)
     await state.update_data(target_uid=target_uid, meal_type=meal_type)
     reserved = _get_user_reserved_days(target_uid, meal_type)
@@ -1457,6 +1489,7 @@ async def handle_text(message: Message, state: FSMContext):
         return
 
     if (not user or user_step == "get_name") and not admin_command:
+        is_first_registration = False
         if text == "🚀 شروع ثبتنام":
             await message.answer(
                 "لطفاً ابتدا نام و نام‌خانوادگی خود را ارسال کنید:",
@@ -1475,6 +1508,17 @@ async def handle_text(message: Message, state: FSMContext):
                 db.add(User(user_id=user_id, full_name=text, step="main_menu", status="pending"))
         await message.answer("✅ نام شما با موفقیت ثبت شد.")
         await message.answer(get_menu_text(), reply_markup=_main_menu_markup(user_id))
+        # اطلاع‌رسانی تکمیل ثبت‌نام به ادمین‌ها — فقط یک پیام شامل نام و شناسه
+        if not is_admin(user_id) and is_first_registration:
+            try:
+                from main import notify_admins
+                import asyncio
+                asyncio.create_task(notify_admins(
+                    message.bot,
+                    f"🆕 ثبت‌نام جدید:\n👤 نام: {text}\n🆔 شناسه: {user_id}",
+                ))
+            except Exception:
+                logger.exception("Could not notify admins about new registration")
         return
 
     if is_admin(user_id) and current_state == RegistrationWindowState.waiting_for_start.state:
@@ -1762,13 +1806,10 @@ async def handle_text(message: Message, state: FSMContext):
         with get_db() as db:
             lunch_count = db.query(User).filter(User.lunch_status == "completed").count()
             dinner_count = db.query(User).filter(User.dinner_status == "completed").count()
+            total_count = db.query(User).count()
         await message.answer(
-            "کاربران کدام وعده نمایش داده شوند؟",
-            reply_markup=get_meal_choice_keyboard(
-                "admin_users",
-                lunch_label=f"🍽️ ناهار ({to_persian_digits(lunch_count)} نفر)",
-                dinner_label=f"🌙 شام ({to_persian_digits(dinner_count)} نفر)",
-            ),
+            "کاربران کدام بخش نمایش داده شوند؟",
+            reply_markup=_users_scope_kb(lunch_count, dinner_count, total_count),
         )
 
     elif cmd in {"edituser", "eu", "ویرایشکاربر"}:

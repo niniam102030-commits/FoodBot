@@ -131,6 +131,16 @@ def get_meal_choice_keyboard(
     ]])
 
 
+def get_user_scope_keyboard(prefix: str) -> InlineKeyboardMarkup:
+    """انتخاب وعده برای مشاهده کاربران + گزینه «کل کاربران» (همه واردشدگان به ربات)."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🍽️ ناهار", callback_data=f"{prefix}_lunch"),
+        InlineKeyboardButton(text="🌙 شام", callback_data=f"{prefix}_dinner"),
+    ], [
+        InlineKeyboardButton(text="👥 کل کاربران", callback_data=f"{prefix}_all"),
+    ]])
+
+
 def get_delete_user_keyboard(target_uid: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ حذف اطلاعات کاربر", callback_data=f"deluser_{target_uid}")]
