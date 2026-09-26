@@ -3,6 +3,7 @@ python-dotenv==1.0.1
 pydantic-settings==2.0.3
 SQLAlchemy==2.0.52
 aiosqlite==0.22.1
+psycopg2-binary==2.9.9
 APScheduler==3.10.4
 aiohttp==3.13.2
 openpyxl==3.1.5

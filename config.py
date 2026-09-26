@@ -6,10 +6,16 @@ class Settings(BaseSettings):
     BOT_TOKEN: str
     API_URL: str = "https://tapi.bale.ai"
     ADMIN_IDS: str = ""  # کاما جدا شده، مثال: 123,456
+    # پیش‌فرض توسعه/تست روی SQLite است. روی سرور، در docker-compose مقدار
+    # postgresql+psycopg2://foodbot:foodbot@db:5432/foodbot تنظیم می‌شود.
     DATABASE_URL: str = "sqlite:///./data/foodbot.db"
     LOG_LEVEL: str = "INFO"
 
     model_config = {"env_file": ".env"}
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.DATABASE_URL.startswith("sqlite")
 
     @property
     def admin_ids_list(self) -> List[str]:

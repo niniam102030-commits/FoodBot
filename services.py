@@ -14,7 +14,7 @@ from database import get_db
 from models import (
     PERSIAN_DIGITS, PERSIAN_MONTHS,
     Setting, Food, User, Reservation, DinnerReservation, FreeOrder,
-    UserContainer, WEEKDAYS_MAP, to_persian_digits,
+    UserContainer, Archive, WEEKDAYS_MAP, to_persian_digits,
 )
 
 
@@ -140,6 +140,27 @@ def is_registration_open() -> bool:
     if get_setting("registration_manual_override") == "true":
         return True
     return is_registration_window_day()
+
+
+def is_registration_last_day() -> bool:
+    """آیا امروز آخرین روز بازهٔ ثبت‌نام است؟ (برای یادآوری هر ۸ ساعت)"""
+    _, end_day, _, end_offset = get_registration_window_config()
+    target_year, target_month = get_registration_period()
+    end_year, end_month = shift_period(target_year, target_month, end_offset)
+    if end_month <= 6:
+        days_in_month = 31
+    elif end_month <= 11:
+        days_in_month = 30
+    else:
+        days_in_month = 30 if jdatetime.date(end_year, end_month, 1).is_leap_year() else 29
+    today = jdatetime.datetime.now()
+    return (today.year, today.month, today.day) == (end_year, end_month, min(end_day, days_in_month))
+
+
+def today_key() -> str:
+    """کلید تاریخ شمسی امروز برای نشانه‌گذاری ارسال روزانه."""
+    now = jdatetime.datetime.now()
+    return f"{now.year}-{now.month}-{now.day}"
 
 
 def registration_deadline_text() -> str:
@@ -434,6 +455,127 @@ def build_excel_report(snapshot: dict | None = None, file_suffix: str = "") -> s
     file_name = f"Food_Report_{year}_{month:02d}{file_suffix}.xlsx"
     wb.save(file_name)
     return file_name
+
+
+def build_kitchen_report(snapshot: dict | None = None, file_suffix: str = "") -> str:
+    """گزارش آشپزخانه: فقط تعداد پرس عادی هر غذا در هر روز.
+
+    برخلاف گزارش مالی، این گزارش ظرف یکبار مصرف و غذای آزاد را شامل نمی‌شود.
+    """
+    snapshot = snapshot or get_report_snapshot()
+    wb = openpyxl.Workbook()
+    font_family = "Tahoma"
+    header_font = Font(name=font_family, size=11, bold=True, color="FFFFFF")
+    data_font = Font(name=font_family, size=11)
+    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+    alt_fill = PatternFill(start_color="F2F5F8", end_color="F2F5F8", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin", color="D9D9D9"), right=Side(style="thin", color="D9D9D9"),
+        top=Side(style="thin", color="D9D9D9"), bottom=Side(style="thin", color="D9D9D9"),
+    )
+
+    year = snapshot["year"]
+    month = snapshot["month"]
+    period = f"{PERSIAN_MONTHS[month - 1]} {to_persian_digits(year)}"
+    ws = wb.active
+    ws.title = f"آشپزخانه {period}"[:31]
+    ws.sheet_view.rightToLeft = True
+    ws.append([f"موسسه امام حسین (ع) - گزارش آشپزخانه {period}"])
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=5)
+    ws.append(["وعده", "روز ماه", "روز هفته", "نام غذا", "تعداد پرس"])
+
+    total_lunch = 0
+    total_dinner = 0
+    for meal_type, meal_name in (("lunch", "ناهار"), ("dinner", "شام")):
+        meal_foods = [food for food in snapshot["foods"] if food["meal_type"] == meal_type]
+        reservation_key = "reservations" if meal_type == "lunch" else "dinner_reservations"
+        for day in snapshot["days"]:
+            food = next((item for item in meal_foods if item["day_num"] == day["weekday_num"]), None)
+            count = 0 if day["is_holiday"] else sum(day["day"] in user[reservation_key] for user in snapshot["users"])
+            if meal_type == "lunch":
+                total_lunch += count
+            else:
+                total_dinner += count
+            ws.append([
+                meal_name, day["day"], day["weekday_name"],
+                "تعطیل رسمی / جمعه" if day["is_holiday"] else (food["food_name"] if food else "نامشخص"),
+                count,
+            ])
+
+    ws.append(["جمع کل ناهار", "", "", "", total_lunch])
+    ws.append(["جمع کل شام", "", "", "", total_dinner])
+
+    for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column)):
+        for cell in row:
+            cell.font = data_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+            if row_idx == 1:
+                cell.font = header_font
+                cell.fill = header_fill
+            elif row_idx == 0 and cell.value:
+                cell.font = Font(name=font_family, size=13, bold=True, color="1F4E78")
+                cell.fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")
+            elif row_idx > 1 and row_idx % 2 == 0:
+                cell.fill = alt_fill
+    for column_cells in ws.columns:
+        width = min(max(max(len(str(cell.value or "")) for cell in column_cells) + 3, 12), 35)
+        ws.column_dimensions[get_column_letter(column_cells[0].column)].width = width
+    ws.freeze_panes = "A3"
+    ws.auto_filter.ref = ws.dimensions
+
+    file_name = f"Kitchen_Report_{year}_{month:02d}{file_suffix}.xlsx"
+    wb.save(file_name)
+    return file_name
+
+
+def build_user_history_text(user_id: str) -> str:
+    """تاریخچهٔ شخصی کاربر: خلاصهٔ هر ماه (ناهار، شام، غذای آزاد، ظرف و هزینه)."""
+    with get_db() as db:
+        archives = (
+            db.query(Archive)
+            .filter(Archive.year.isnot(None), Archive.month.isnot(None), Archive.payload.isnot(None))
+            .order_by(Archive.year, Archive.month)
+            .all()
+        )
+        archived = []
+        for archive in archives:
+            try:
+                archived.append((archive.year, archive.month, json.loads(archive.payload)))
+            except (TypeError, ValueError):
+                continue
+    current_year, current_month = get_registration_period()
+    snapshots = archived + [(current_year, current_month, get_report_snapshot())]
+
+    lines = ["📜 تاریخچهٔ ثبت‌های من", ""]
+    found = False
+    for year, month, snapshot in snapshots:
+        user = next(
+            (item for item in snapshot.get("users", []) if str(item.get("user_id")) == str(user_id)),
+            None,
+        )
+        if not user:
+            continue
+        found = True
+        month_name = PERSIAN_MONTHS[month - 1] if 1 <= month <= 12 else str(month)
+        lunch_days = len(user.get("reservations", []))
+        dinner_days = len(user.get("dinner_reservations", []))
+        free_count = sum(order.get("count", 0) for order in user.get("free_orders", []))
+        total = _snapshot_user_total(user, snapshot)
+        lines.append(f"🗓️ {month_name} {to_persian_digits(year)}")
+        lines.append(
+            f"   🍽️ ناهار: {to_persian_digits(lunch_days)} روز | "
+            f"🌙 شام: {to_persian_digits(dinner_days)} روز"
+        )
+        lines.append(
+            f"   🍔 غذای آزاد: {to_persian_digits(free_count)} عدد | "
+            f"📦 ظرف: {to_persian_digits(user.get('containers', 0))}"
+        )
+        lines.append(f"   💰 هزینه: {format_price(total)} تومان")
+        lines.append("")
+    if not found:
+        lines.append("هنوز سابقه‌ای برای شما ثبت نشده است.")
+    return "\n".join(lines)
 
 
 def get_menu_text() -> str:

@@ -29,15 +29,17 @@ from keyboards import (
 )
 from services import (
     PERSIAN_MONTHS, add_extra_admin, admin_notice_text, calculate_user_total,
-    build_excel_report, get_all_admin_ids, get_menu_text, build_invoice_text, format_price,
+    build_excel_report, build_kitchen_report, build_user_history_text,
+    get_all_admin_ids, get_menu_text, build_invoice_text, format_price,
     get_days_details, get_next_period, get_registration_period,
     get_registration_window, get_registration_window_config, get_setting,
-    is_registration_open, is_registration_window_day, remove_extra_admin,
+    is_registration_open, is_registration_window_day, is_registration_last_day,
+    remove_extra_admin,
     registration_deadline_text, registration_period_text, registration_window_text,
-    registration_deadline_notice,
+    registration_deadline_notice, today_key,
     set_setting, shift_period, to_int, to_persian_digits,
 )
-from scheduler import job_monthly_reset
+from scheduler import job_monthly_reset, job_registration_backup
 import jdatetime
 
 logger = logging.getLogger(__name__)
@@ -186,6 +188,15 @@ def _meal_label(meal_type: str) -> str:
     return "کل کاربران"
 
 
+def _menu_change_text(lines: str) -> str:
+    """قالب اطلاعیهٔ تغییر منو/قیمت برای همهٔ کاربران."""
+    return (
+        "🔔 اطلاعیهٔ تغییر منو و قیمت\n\n"
+        f"{lines}\n\n"
+        "📋 برای دیدن منوی به‌روز، «منوی هفتگی و قیمت‌ها» را بزنید."
+    )
+
+
 def _window_label(start_day: int, start_offset: int, end_day: int, end_offset: int) -> str:
     target_year, target_month = get_registration_period()
     start_year, start_month = shift_period(target_year, target_month, start_offset)
@@ -229,6 +240,31 @@ async def _notify_admins(bot, text: str):
             await bot.send_message(admin_id, text)
         except Exception as exc:
             logger.error("Admin notification failed for %s: %s", admin_id, exc)
+
+
+def _users_scope_kb(lunch_count: int, dinner_count: int, total_count: int):
+    """کیبورد انتخاب بخش کاربران همراه با تعداد هر گروه."""
+    return get_user_scope_keyboard(
+        "admin_users",
+        lunch_label=f"🍽️ ناهار ({to_persian_digits(lunch_count)})",
+        dinner_label=f"🌙 شام ({to_persian_digits(dinner_count)})",
+        all_label=f"👥 کل کاربران ({to_persian_digits(total_count)})",
+    )
+
+
+async def _broadcast_users(bot, text: str):
+    """ارسال اطلاعیه به همهٔ کاربران ثبت‌نام‌شده (به‌جز ادمین‌ها)."""
+    with get_db() as db:
+        user_ids = [user.user_id for user in db.query(User).filter(User.full_name != "").all()]
+    admins = set(get_all_admin_ids())
+    for user_id in user_ids:
+        if user_id in admins:
+            continue
+        try:
+            await bot.send_message(user_id, text)
+        except Exception as exc:
+            logger.error("Broadcast to %s failed: %s", user_id, exc)
+        await asyncio.sleep(0.05)
 
 
 # ─── /start ───────────────────────────────────────────────────────────────────
@@ -292,6 +328,20 @@ async def handle_my_registrations(message: Message):
     await message.answer(
         "کدام وعده را می‌خواهید ببینید؟",
         reply_markup=get_meal_choice_keyboard("view_reg"),
+    )
+
+
+@router.message(F.text == "📜 تاریخچه من")
+async def handle_my_history(message: Message):
+    user_id = str(message.from_user.id)
+    with get_db() as db:
+        user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        await message.answer("لطفاً ابتدا /start را ارسال کنید.")
+        return
+    await message.answer(
+        build_user_history_text(user_id),
+        reply_markup=get_back_to_menu_keyboard(),
     )
 
 
@@ -1650,8 +1700,11 @@ async def handle_text(message: Message, state: FSMContext):
             food_id = edit_data["food_id"]
             normal_price = edit_data["normal_price"]
             free_price = value
+            meal_type = edit_data.get("meal_type", "lunch")
             with get_db() as db:
                 food = db.query(Food).filter(Food.id == food_id).first()
+                food_name = food.food_name if food else "غذا"
+                day_name = food.day_name if food else ""
                 if food:
                     food.normal_price = normal_price
                     food.free_price = free_price
@@ -1662,6 +1715,11 @@ async def handle_text(message: Message, state: FSMContext):
                 f"💵 عادی: {format_price(edit_data.get('old_normal_price', 0))} → {format_price(normal_price)} تومان\n"
                 f"💵 آزاد: {format_price(edit_data.get('old_free_price', 0))} → {format_price(free_price)} تومان"
             )
+            # اطلاع‌رسانی تغییر قیمت به همهٔ کاربران
+            asyncio.create_task(_broadcast_users(message.bot, _menu_change_text(
+                f"💵 {_meal_label(meal_type)} {day_name}: {food_name}\n"
+                f"   عادی: {format_price(normal_price)} تومان | آزاد: {format_price(free_price)} تومان"
+            )))
             return
 
     if is_admin(user_id) and current_state == ContainerPriceState.waiting_for_price.state:
@@ -1683,6 +1741,9 @@ async def handle_text(message: Message, state: FSMContext):
         await message.answer(
             f"✅ قیمت ظرف یک‌بار مصرف از {format_price(current_price)} به {format_price(value)} تومان بروزرسانی شد."
         )
+        asyncio.create_task(_broadcast_users(message.bot, _menu_change_text(
+            f"📦 قیمت ظرف یک‌بار مصرف ناهار: {format_price(value)} تومان"
+        )))
         return
 
     if is_admin(user_id) and current_state == FoodEditState.waiting_for_name.state:
@@ -1698,11 +1759,16 @@ async def handle_text(message: Message, state: FSMContext):
             ).first()
             if food:
                 food.food_name = text.strip()
+        day_name = food.day_name if food else ""
         await state.clear()
         _audit(user_id, "edit_food_name", str(day_num), text.strip())
         await message.answer(
             f"✅ نام غذای {_meal_label(meal_type)} در روز انتخابی به «{text.strip()}» تغییر کرد."
         )
+        # اطلاع‌رسانی تغییر نام غذا (منو) به همهٔ کاربران
+        asyncio.create_task(_broadcast_users(message.bot, _menu_change_text(
+            f"📝 منوی {_meal_label(meal_type)} {day_name}: «{text.strip()}»"
+        )))
         return
 
     if is_admin(user_id) and current_state == UserReservationState.waiting_for_days.state:
@@ -1861,13 +1927,16 @@ async def handle_text(message: Message, state: FSMContext):
         current = get_setting("registration_status")
         new_status = "inactive" if current == "active" else "active"
         set_setting("registration_status", new_status)
+        manual_activated = False
         if new_status == "inactive":
             set_setting("registration_manual_override", "false")
         else:
-            set_setting(
-                "registration_manual_override",
-                "false" if is_registration_window_day() else "true",
-            )
+            manual = "false" if is_registration_window_day() else "true"
+            set_setting("registration_manual_override", manual)
+            # فعال‌سازی دستی خارج از بازه: نشانه‌گذاری تا همان روز بکاپ ماهانه ارسال شود
+            if manual == "true":
+                set_setting("registration_manual_activated_at", today_key())
+                manual_activated = True
         _audit(user_id, "toggle_registration_status", details=new_status)
         label = "بسته ❌" if new_status == "inactive" else "باز ✅"
         await message.answer(f"ثبت‌نام کاربران اکنون {label} است.")
@@ -1879,6 +1948,9 @@ async def handle_text(message: Message, state: FSMContext):
                 f"🗓️ بازه ثبت‌نام: {registration_window_text()}",
             ),
         )
+        if manual_activated:
+            # بکاپ/گزارش همان روز ارسال می‌شود (داخل بازهٔ ثبت‌نام هر روز انجام می‌شود)
+            asyncio.create_task(job_registration_backup(message.bot))
 
     elif cmd in {"cn", "cancelnext", "لغوماه", "لغوشروعماه"}:
         set_setting("registration_status", "inactive")
@@ -1941,9 +2013,13 @@ async def handle_text(message: Message, state: FSMContext):
                 old_price_num = to_int(old_price)
             except (TypeError, ValueError):
                 old_price_num = 0
+            _audit(user_id, "edit_container_price", details=str(value))
             await message.answer(
                 f"✅ قیمت ظرف یک‌بار مصرف از {format_price(old_price_num)} به {format_price(value)} تومان بروزرسانی شد."
             )
+            asyncio.create_task(_broadcast_users(message.bot, _menu_change_text(
+                f"📦 قیمت ظرف یک‌بار مصرف ناهار: {format_price(value)} تومان"
+            )))
             return
         current_price = to_int(get_setting("container_price") or 0)
         await state.set_state(ContainerPriceState.waiting_for_price)

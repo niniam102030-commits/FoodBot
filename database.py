@@ -1,5 +1,7 @@
+import logging
 import os
 import sqlite3
+import subprocess
 from datetime import datetime
 
 from sqlalchemy import create_engine, inspect, text
@@ -7,11 +9,20 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 from contextlib import contextmanager
 from config import settings
 
+logger = logging.getLogger(__name__)
+
 Base = declarative_base()
-engine = create_engine(
-    settings.DATABASE_URL.replace("sqlite:///", "sqlite:///") if "sqlite" in settings.DATABASE_URL else settings.DATABASE_URL,
-    connect_args={"check_same_thread": False},
-)
+
+# تنظیمات موتور بر اساس نوع دیتابیس: SQLite برای توسعه/تست و PostgreSQL روی سرور
+_engine_kwargs: dict = {}
+if settings.is_sqlite:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # pool_pre_ping اتصال‌های مرده را قبل از استفاده بازیابی می‌کند و
+    # pool_recycle از قطع شدن اتصال‌های طولانی توسط فایروال جلوگیری می‌کند
+    _engine_kwargs.update(pool_pre_ping=True, pool_recycle=1800)
+
+engine = create_engine(settings.DATABASE_URL, **_engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -36,33 +47,53 @@ def init_db():
 
 
 def backup_database() -> str:
-    """Create a timestamped SQLite backup and return its path."""
-    if not settings.DATABASE_URL.startswith("sqlite:///"):
-        raise RuntimeError("Automatic backup is only supported for SQLite")
+    """Create a timestamped backup of the database and return its path.
 
-    source_path = settings.DATABASE_URL.removeprefix("sqlite:///")
-    if not os.path.isabs(source_path):
-        source_path = os.path.abspath(source_path)
-    if not os.path.exists(source_path):
-        raise FileNotFoundError(source_path)
-
+    برای SQLite یک کپی امن از فایل ساخته می‌شود و برای PostgreSQL از pg_dump
+    یک فایل SQL فشرده گرفته می‌شود. اگر pg_dump در دسترس نباشد، خطا بالا می‌رود.
+    """
     backup_dir = os.path.join(os.path.dirname(__file__), "backups")
     os.makedirs(backup_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = os.path.join(backup_dir, f"foodbot_{stamp}.db")
-    source = sqlite3.connect(source_path)
-    destination = sqlite3.connect(backup_path)
+
+    if settings.is_sqlite:
+        source_path = settings.DATABASE_URL.removeprefix("sqlite:///")
+        if not os.path.isabs(source_path):
+            source_path = os.path.abspath(source_path)
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(source_path)
+        backup_path = os.path.join(backup_dir, f"foodbot_{stamp}.db")
+        source = sqlite3.connect(source_path)
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+            source.close()
+        return backup_path
+
+    # PostgreSQL: pg_dump یک فایل SQL قابل بازیابی می‌سازد
+    backup_path = os.path.join(backup_dir, f"foodbot_{stamp}.sql")
     try:
-        source.backup(destination)
-    finally:
-        destination.close()
-        source.close()
+        with open(backup_path, "w", encoding="utf-8") as dump_file:
+            subprocess.run(
+                ["pg_dump", "--no-owner", "--no-privileges", settings.DATABASE_URL],
+                stdout=dump_file,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+    except FileNotFoundError as exc:
+        raise RuntimeError("pg_dump not installed; cannot back up PostgreSQL") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"pg_dump failed: {exc.stderr.decode(errors='ignore')}") from exc
     return backup_path
 
 
 def _migrate():
     inspector = inspect(engine)
     tables = inspector.get_table_names()
+    # نوع ستون تاریخ‌زمان در SQLite و PostgreSQL متفاوت است
+    datetime_type = "DATETIME" if settings.is_sqlite else "TIMESTAMP"
     with engine.begin() as connection:
         if "archive" in tables:
             columns = {column["name"] for column in inspector.get_columns("archive")}
@@ -74,9 +105,9 @@ def _migrate():
             if table_name in tables:
                 res_columns = {column["name"] for column in inspector.get_columns(table_name)}
                 if "created_at" not in res_columns:
-                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN created_at DATETIME"))
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN created_at {datetime_type}"))
                 if "updated_at" not in res_columns:
-                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN updated_at DATETIME"))
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN updated_at {datetime_type}"))
         if "fsm_states" in tables:
             # stateهای ذخیره‌شده با فرمت خراب "<State '...'>" از نسخه‌های قبلی؛ قابل بازیابی نیستند و پاک می‌شوند
             connection.execute(text(
@@ -119,6 +150,10 @@ def _seed_defaults():
             ("blocked_days", ""),
             ("registration_access_code", "1234"),
             ("meal_prices_initialized_v2", "false"),
+            # تاریخ (شمسی) فعال‌سازی دستی ثبت‌نام؛ همان شب بکاپ ماهانه ارسال می‌شود
+            ("registration_manual_activated_at", ""),
+            # آخرین تاریخی که بکاپ/گزارش آشپزخانه برای ادمین‌ها ارسال شده (ضد ارسال تکراری)
+            ("last_registration_backup_at", ""),
         ]
         for key, value in defaults:
             if not db.query(Setting).filter(Setting.key == key).first():

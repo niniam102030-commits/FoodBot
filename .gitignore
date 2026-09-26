@@ -1,0 +1,21 @@
+# اطلاعات حساس — هرگز آپلود نشود
+.env
+
+# دیتابیس‌ها
+*.db
+*.sqlite3
+data/
+logs/
+backups/
+pgdata/
+
+# فایل‌های پایتون
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# متفرقه
+.vscode/
+.freebuff/
+.bot.lock

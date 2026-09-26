@@ -1,5 +1,6 @@
 BOT_TOKEN=1234567890:AAtoken-khod-ra-inja-bigozarid
 API_URL=https://tapi.bale.ai
 ADMIN_IDS=123456789
-DATABASE_URL=sqlite:///./data/foodbot.db
+# دیتابیس روی سرور PostgreSQL است؛ این مقدار را عوض نکنید (docker-compose خودش تنظیم می‌کند)
+DATABASE_URL=postgresql+psycopg2://foodbot:foodbot@db:5432/foodbot
 LOG_LEVEL=INFO

@@ -9,13 +9,35 @@ services:
     env_file: .env
     environment:
       TZ: Asia/Tehran
+      # دیتابیس روی سرور PostgreSQL است (نه SQLite)
+      DATABASE_URL: postgresql+psycopg2://foodbot:foodbot@db:5432/foodbot
     volumes:
-      - ./data:/app/data
       - ./logs:/app/logs
       - ./backups:/app/backups
     stop_grace_period: 30s
     depends_on:
-      - autoheal
+      db:
+        condition: service_healthy
+      autoheal:
+        condition: service_started
+
+  # دیتابیس Production — داده‌ها در volume ماندگار می‌مانند
+  db:
+    image: postgres:16-alpine
+    container_name: foodbot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: foodbot
+      POSTGRES_PASSWORD: foodbot
+      POSTGRES_DB: foodbot
+      TZ: Asia/Tehran
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foodbot -d foodbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   # نگهبان: کانتینر ناسالم را خودکار ری‌استارت می‌کند
   autoheal:

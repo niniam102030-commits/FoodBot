@@ -16,6 +16,7 @@ def get_main_menu(is_admin: bool = False, lunch_mark: str = "", dinner_mark: str
         [KeyboardButton(text=f"🌙 ثبت / ویرایش غذای شام{dinner_mark}")],
         [KeyboardButton(text="📋 منوی هفتگی و قیمت‌ها")],
         [KeyboardButton(text="📋 مشاهده ثبت‌های من")],
+        [KeyboardButton(text="📜 تاریخچه من")],
         [KeyboardButton(text="👤 ویرایش نام")],
         [KeyboardButton(text="💡 راهنما")],
         [KeyboardButton(text="🗑️ حذف حساب کاربری")],
@@ -131,13 +132,18 @@ def get_meal_choice_keyboard(
     ]])
 
 
-def get_user_scope_keyboard(prefix: str) -> InlineKeyboardMarkup:
+def get_user_scope_keyboard(
+    prefix: str,
+    lunch_label: str = "🍽️ ناهار",
+    dinner_label: str = "🌙 شام",
+    all_label: str = "👥 کل کاربران",
+) -> InlineKeyboardMarkup:
     """انتخاب وعده برای مشاهده کاربران + گزینه «کل کاربران» (همه واردشدگان به ربات)."""
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🍽️ ناهار", callback_data=f"{prefix}_lunch"),
-        InlineKeyboardButton(text="🌙 شام", callback_data=f"{prefix}_dinner"),
+        InlineKeyboardButton(text=lunch_label, callback_data=f"{prefix}_lunch"),
+        InlineKeyboardButton(text=dinner_label, callback_data=f"{prefix}_dinner"),
     ], [
-        InlineKeyboardButton(text="👥 کل کاربران", callback_data=f"{prefix}_all"),
+        InlineKeyboardButton(text=all_label, callback_data=f"{prefix}_all"),
     ]])
 
 

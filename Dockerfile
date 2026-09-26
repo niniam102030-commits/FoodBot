@@ -8,6 +8,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# کتابخانه client پستگرس برای pg_dump (بکاپ خودکار دیتابیس روی سرور)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 # وابستگی‌ها در لایه جدا تا تغییر کد، نصب پکیج‌ها را دوباره اجرا نکند
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
