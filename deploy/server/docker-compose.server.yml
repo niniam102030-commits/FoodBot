@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  foodbot:
+    image: ghcr.io/niniam102030-commits/foodbot:1.0.0   # پین‌شده به تگ مشخص؛ قبل از deploy مقدار را به تگ واقعی تغییر دهید
+    container_name: foodbot
+    restart: unless-stopped
+    labels:
+      - autoheal=true
+    env_file: .env
+    environment:
+      TZ: Asia/Tehran
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./backups:/app/backups
+    stop_grace_period: 30s
+    depends_on:
+      - db
+      - autoheal
+    # توجه: Dockerfile این پروژه یک HEALTHCHECK تعریف کرده است (pgrep -f "python main.py"),
+    # بنابراین autoheal به درستی می‌تواند بر اساس سلامت کانتینر عمل کند.
+
+  db:
+    image: postgres:15-alpine
+    container_name: foodbot_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: foodbot
+      POSTGRES_PASSWORD: foodbot
+      POSTGRES_DB: foodbot
+      TZ: Asia/Tehran
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      TZ: Asia/Tehran
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  pgdata:
+  data:
+  logs:
+  backups:
